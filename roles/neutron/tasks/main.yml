@@ -1,0 +1,223 @@
+#---
+#- import_tasks: prereq.yml
+#- import_tasks: install.yml
+#- import_tasks: network1.yml
+#- import_tasks: configure.yml
+
+- name: installing the components for neutron
+  apt:
+    name: neutron-linuxbridge-agent
+  when: ansible_distribution == "Ubuntu" 
+
+- name: configuring RabbitMQ message queue access
+  copy:
+    dest: /etc/neutron/neutron.conf
+    content: |
+      [DEFAULT]
+      transport_url = rabbit://openstack:1234@controller
+
+- name: configuring Identity service access (1)
+  copy:
+    dest: /etc/neutron/neutron.conf
+    content: |
+      [DEFAULT]
+      auth_strategy = keystone
+
+      [keystone_authtoken]
+      www_authenticate_uri = http://controller:5000
+      auth_url = http://controller:5000
+      memcached_servers = controller:11211
+      auth_type = password
+      project_domain_name = default
+      user_domain_name = default
+      project_name = service
+      username = neutron
+      password = 1234
+
+- name: configuring the lock path
+  copy:
+    dest: /etc/neutron/neutron.conf
+    content: |
+      [oslo_currency]
+      lock_path = /var/lib/neutron/tmp
+
+- name: configuring the access parameters
+  copy:
+    dest: /etc/nova/nova.conf
+    content: |
+      [neutron]
+      auth_url = http://controller:5000
+      auth_type = password
+      project_domain_name = default
+      user_domain_name = default
+      region_name = RegionOne
+      project_name = service
+      username = neutron
+      password = 1234
+
+- name: restarting the compute service
+  shell: service nova-compute restart
+  when: ansible_distribution == "Ubuntu"
+
+- name: restarting the linux bridge agent
+  shell: service neutron-linuxbridge-agent restart
+  when: ansible_distribution == "Ubuntu"
+
+- name: Installing neutron and its dependencies
+  yum:
+    name:
+      - openstack-neutron 
+      - openstack-neutron-ml2 
+      - openstack-neutron-linuxbridge 
+      - ebtables
+  when: ansible_distribution == "CentOS"
+
+- name: Configuring metadata_agent.ini file
+  copy:
+    src: metadata_agent.ini
+    dest: /etc/neutron/metadata_agent.ini
+    owner: root
+    group: neutron
+    mode: '0640'
+  when: ansible_distribution == "CentOS"
+
+- name: Configuring nova.conf file
+  copy:
+    src: nova.conf
+    dest: /etc/nova/nova.conf
+    owner: root
+    group: nova
+    mode: '0640'
+  when: ansible_distribution == "CentOS"
+
+- name: Creating a link
+  command: ln -s /etc/neutron/plugins/ml2/ml2_conf.ini /etc/neutron/ml2_conf.ini
+  failed_when: false
+  no_log: true
+  when: ansible_distribution == "CentOS"
+
+- name: Populating the database
+  become_user: root
+  command: su -s /bin/sh -c "neutron-db-manage --config-file /etc/neutron/neutron.conf --config-file /etc/neutron/plugins/ml2/ml2_conf.ini upgrade head" neutron
+  failed_when: false
+  no_log: true
+  when: ansible_distribution == "CentOS"
+
+- name: Restarting the nova-api service
+  systemd:
+    name: openstack-nova-api.service
+    state: restarted
+  failed_when: false
+  no_log: true
+  when: ansible_distribution == "CentOS"
+
+- name: Starting and enabling the Networking services
+  systemd:
+    name:
+      - neutron-server.service
+      - neutron-linuxbridge-agent.service
+      - neutron-dhcp-agent.service
+      - neutron-metadata-agent.service
+    state: started
+    enabled: true
+  failed_when: false
+  no_log: true
+  when: ansible_distribution == "CentOS"
+
+- name: Editing neutron.conf file
+  copy:
+    src: neutron.conf
+    dest: /etc/neutron/neutron.conf
+    owner: root
+    group: neutron
+    mode: '0640'
+  when: ansible_distribution == "CentOS"
+
+- name: Editing ml2_conf.ini file
+  copy:
+    src: ml2_conf.ini
+    dest: /etc/neutron/plugins/ml2/ml2_conf.ini
+    owner: root
+    group: neutron
+    mode: '0640'
+  when: ansible_distribution == "CentOS"
+
+- name: Editing linuxbridge_agent.ini file
+  copy:
+    src: linuxbridge_agent.ini 
+    dest: /etc/neutron/plugins/ml2/linuxbridge_agent.ini 
+    owner: root
+    group: neutron
+    mode: '0640'
+  when: ansible_distribution == "CentOS"
+
+- name: Editing dhcp_agent.ini file
+  copy:
+    src: dhcp_agent.ini
+    dest: /etc/neutron/dhcp_agent.ini
+    owner: root
+    group: neutron
+    mode: '0640'
+  when: ansible_distribution == "CentOS"
+
+- name: Creating neutron database
+  mysql_db:
+    name: neutron
+    state: present
+  become: true
+  become_user: root
+  when: ansible_distribution == "CentOS"
+
+- name: Granting privileges on neutron database
+  mysql_user:
+    name: neutron
+    host: "{{ item }}"
+    password: neutronpass
+    priv: "neutron.*:ALL"
+    state: present
+  become: true
+  become_user: root
+  with_items:
+    - localhost
+    - "%"
+  when: ansible_distribution == "CentOS"
+
+- name: Sourcing the admin credentials
+  command: "source /home/cserver/admin-openrc"
+  args:
+    executable: /bin/bash
+  environment:
+    HOME: "/home/cserver"
+  when: ansible_distribution == "CentOS"
+
+- name: Creating neutron user
+  expect:
+    command: "openstack user create --domain default --password-prompt neutron"
+    responses:
+      "User Password": "neutronpass"
+      "Repeat User Password": "neutronpass"
+  become: true
+  become_user: cserver
+  when: ansible_distribution == "CentOS"
+
+- name: Adding admin roles to the neutron user
+  command: "openstack role add --project service --user neutron admin"
+  become: true
+  become_user: cserver
+  when: ansible_distribution == "CentOS"
+
+- name: Creating neutron service entity
+  command: "openstack service create --name neutron --description 'OpenStack Networking Service' network"
+  become: true
+  become_user: cserver
+  when: ansible_distribution == "CentOS"
+
+- name: Creating the network service API endpoints
+  command: |
+    openstack endpoint create --region RegionOne network public http://controller:9696
+    openstack endpoint create --region RegionOne network internal http://controller:9696
+    openstack endpoint create --region RegionOne network admin http://controller:9696
+  become: true
+  become_user: cserver
+  when: ansible_distribution == "CentOS"
+

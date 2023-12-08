@@ -1,0 +1,151 @@
+---
+
+- name: Installing the packages for horizon
+  apt:
+    name: openstack-dashboard
+  when: ansible_distribution == "Ubuntu"
+
+- name: configuring the dashboard to use Openstack services
+  copy:
+    dest: /etc/openstack-dashboard/local_settings.py
+    content: |
+      OPENSTACK_HOST = "controller"
+  when: ansible_distribution == "Ubuntu"
+
+- name: Allowing all hosts to access dashboard
+  copy:
+    dest: /etc/openstack-dashboard/local_settings.py
+    content: |
+      ALLOWED_HOSTS = ['*']
+  when: ansible_distribution == "Ubuntu"
+
+- name: configure the memcached session storage service
+  copy:
+    dest: /etc/openstack-dashboard/local_settings.py
+    content: |
+      SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
+
+      CACHES = {
+          'default': {
+               'BACKEND': 'django.core.cache.backends.memcached.MemcachedCache', 'LOCATION': 'controller:11211',
+               }
+               }
+  when: ansible_distribution == "Ubuntu"
+
+- name: enable the identity API version 3
+  copy:
+    dest: /etc/openstack-dashboard/local_settings.py
+    content: |
+      OPENSTACK_KEYSTONE_URL = "http://%s/identity/v3" % OPENSTACK_HOST
+  when: ansible_distribution == "Ubuntu"
+
+- name: enable support for domains
+  copy:
+    dest: /etc/openstack-dashboard/local_settings.py
+    content: |
+      OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT = True
+  when: ansible_distribution == "Ubuntu"
+
+- name: configure API versions
+  copy:
+    dest: /etc/openstack-dashboard/local_settings.py
+    content: |
+      OPENSTACK_API_VERSIONS = {
+          "identity": 3,
+          "image": 2,
+          "volume": 3,
+      }
+  when: ansible_distribution == "Ubuntu"
+
+- name: configure default as the default domain for users that you create via the dashboard
+  copy:
+    dest: /etc/openstack-dashboard/local_settings.py
+    content: |
+      OPENSTACK_KEYSTONE_DEFAULT_DOMAIN = "Default"
+  when: ansible_distribution == "Ubuntu"
+
+- name: configure user as the default role for users that your create via the dashboard
+  copy:
+    dest: /etc/openstack-dashboard/local_settings.py
+    content: |
+      OPENSTACK_KEYSTONE_DEFAULT_ROLE = "user"
+  when: ansible_distribution == "Ubuntu"
+
+- name: if you choose network 1, disable support for layer-3 networking services
+  copy:
+    dest: /etc/openstack-dashboard/local_settings.py
+    content: |
+      OPENSTACK_NEUTRON_NETWORK = {
+          'enable_router': False,
+          'enable_quotas': False,
+          'enable_ipv6': False,
+          'enable_distributed_router': False,
+          'enable_ha_router': False,
+          'enable_fip_topology_check': False
+      }
+  when: ansible_distribution == "Ubuntu"
+
+- name: add the following line if not added yet
+  copy:
+    dest: /etc/openstack-dashboard/local_settings.py
+    content: |
+      CACHES = {
+          'default': {
+              'BACKEND': 'django.core.cache.backends.memcached.MemcachedCache', 'LOCATION': 192.168.56.106:11211',
+              },
+              }
+      SESSION_ENGINE = "django.contrib.sessions.backends.cache"
+      OPENSTACK_HOST = "192.168.56.106"
+      OPENSTACK_KEYSTONE_URL = "http://%s/identity/v3" % OPENSTACK_HOST
+      
+      TIME_ZONE = "Asia/Tokyo"
+      
+      OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT = True
+      OPENSTACK_KEYSTONE_DEFAULT_DOMAIN = 'Default'
+      OPENSTACK_API_VERSIONS = {
+          "identity": 3,
+          "volume": 3,
+          "compute": 2,
+      }     
+      WSGIApplicationGroup %{GLOBAL}
+  when: ansible_distribution == "Ubuntu"
+
+- name: install apache2
+  apt:
+    name: apache2
+  when: ansible_distribution == "Ubuntu"
+
+- name: finalize installation by starting the apache2 service
+  shell: sudo systemctl reload apache2.service
+  when: ansible_distribution == "Ubuntu"
+
+- name: finalize installation by reloading the apache2 service
+  shell: sudo systemctl reload apache2.service
+  when: ansible_distribution == "Ubuntu"
+
+- name: Installing dashboard
+  yum:
+    name: openstack-dashboard
+  when: ansible_distribution == "CentOS"
+
+- name: Configuring dashboard local settings
+  copy:
+    src: local_settings
+    dest: /etc/openstack-dashboard
+    owner: root
+    group: apache
+    mode: 640
+
+  notify: Restarting httpd and memcached 
+  when: ansible_distribution == "CentOS"
+
+- name: Configuring openstack dashboard
+  copy:
+    src:  openstack-dashboard.conf
+    dest:  /etc/httpd/conf.d/
+    owner: root
+    group: root
+    mode: 0644
+
+  notify: Restarting httpd and memcached 
+  when: ansible_distribution == "CentOS"

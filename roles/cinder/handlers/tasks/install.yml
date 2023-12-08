@@ -1,0 +1,266 @@
+---
+- name: Install Cinder 
+  apt:
+    name: cinder-api
+  when: ansible_distribution == "Ubuntu"
+
+- name: install cinder scheduler
+  shell: sudo apt install cinder-scheduler
+  when: ansible_distribution == "Ubuntu"
+
+- name: configure database access
+  copy:
+    dest: /etc/cinder/cinder.conf
+    content: |
+      [database]
+      connection = mysql+pymysql://cinder:1234@controller/cinder
+  when: ansible_distribution == "Ubuntu"
+
+- name: configure RabbitMQ message queue access
+  copy:
+    dest: /etc/cinder/cinder.conf
+    content: |
+      [DEFAULT]
+      transport_url = rabbit://openstack:1234@controller
+  when: ansible_distribution == "Ubuntu"
+
+- name: configure identity services access
+  copy:
+    dest: /etc/cinder/cinder.conf
+    content: |
+      [DEFAULT]
+      auth_strategy = keystone
+
+      [keystone_authtoken]
+      www_authenticate_uri = http://controller:5000
+      auth_url = http://controller:5000
+      memcached_servers = controller:11211
+      auth_type = password
+      project_domain_name = default
+      user_domain_name = default
+      project_name = service
+      username = cinder
+      password = 1234
+  when: ansible_distribution == "Ubuntu"
+
+- name: configure my_ip option to use the management interface IP add of controller node
+  copy:
+    dest: /etc/cinder/cinder.conf
+    content: |
+      [DEFAULT]
+      my_ip = 192.168.56.106
+  when: ansible_distribution == "Ubuntu"
+
+- name: configure the lock path
+  copy:
+    dest: /etc/cinder/cinder.conf
+    content: |
+      [oslo_concurrency]
+      lock_path = /var/lib/cinder/tmp
+  when: ansible_distribution == "Ubuntu"
+
+- name: populate the block storage database
+  shell: su -s /bin/sh -c "cinder-manage db sync" cinder
+  when: ansible_distribution == "Ubuntu"
+
+- name: adding the following line for block storage
+  copy:
+    dest: /etc/nova/nova.conf
+    content: |
+      [cinder]
+      os_region_name = RegionOne
+  when: ansible_distribution == "Ubuntu"
+
+- name: install nova-api
+  shell: sudo apt install nova-api
+  when: ansible_distribution == "Ubuntu"
+
+- name: restarting the compute API service
+  shell: service nova-api start
+  when: ansible_distribution == "Ubuntu"
+
+- name: restart the block storage services (1)
+  shell: service cinder-scheduler start
+  when: ansible_distribution == "Ubuntu"
+
+- name: restart the block storage services (2)
+  shell: sudo systemctl start apache2
+  when: ansible_distribution == "Ubuntu"
+
+- name: install the supporting utility packages
+  apt:
+    name:
+       - lvm2
+       - thin-provisioning-tools
+  when: ansible_distribution == "Ubuntu"
+
+- name: create the LVM physical volume /dev/sdb
+  file:
+    path: /dev/sdb
+    state: directory
+  when: ansible_distribution == "Ubuntu"
+
+- name: create the LVM volume group cinder-volume
+  shell: sudo touch cinder-volumes /dev/sdb
+  when: ansible_distribution == "Ubuntu"
+
+- name: install the packages for cinder (2) storage node
+  apt:
+    name:
+       - cinder-volume
+       - tgt
+  when: ansible_distribution == "Ubuntu"
+
+- name: configure the LVM backend with the LVM driver
+  copy:
+    dest: /etc/cinder/cinder.conf
+    content: |
+      [lvm]
+      volume_driver = cinder.volume.drivers.lvm.LVMVolumeDriver
+      volume_group = cinder-volumes
+      target_protocol = iscsi
+      target_helper = tgtadm
+  when: ansible_distribution == "Ubuntu"
+
+- name: enabling the LVM backend
+  copy:
+    dest: /etc/cinder/cinder.conf
+    content: |
+      [DEFAULT]
+      enabled_backends = lvm
+  when: ansible_distribution == "Ubuntu"
+
+- name: configuring the location of the image service API
+  copy:
+    dest: /etc/cinder/cinder.conf
+    content: |
+      [DEFAULT]
+      glance_api_servers = http://controller:9292
+  when: ansible_distribution == "Ubuntu"
+
+- name: configuring the lock path
+  copy:
+    dest: /etc/cinder/cinder.conf
+    content: |
+      [oslo_concurrency]
+      lock_path = /var/lib/cinder/tmp
+  when: ansible_distribution == "Ubuntu"
+
+- name: Restarting the block storage volume service including its dependencies (1)
+  shell: service tgt restart
+  when: ansible_distribution == "Ubuntu"
+
+- name: Restarting the block storage volume service including its dependencies (2)
+  shell: service cinder-volume restart
+  when: ansible_distribution == "Ubuntu"
+
+- name: install the packages for cinder (3) backup service
+  apt:
+    name: cinder-backup
+  when: ansible_distribution == "Ubuntu"
+
+- name: configuring the backup options
+  copy:
+    dest: /etc/cinder/cinder.conf
+    content: |
+     [DEFAULT]
+      backup_driver = cinder.backup.drivers.swift.SwiftBackupDriver
+      backup_swift_url = SWIFT_URL
+  when: ansible_distribution == "Ubuntu"
+
+- name: restart the block storage backup service
+  shell: service cinder-backup start
+  when: ansible_distribution == "Ubuntu"
+
+- name: Installing cinder
+  yum:
+    name:
+      - openstack-cinder
+  when: ansible_distribution == "CentOS"
+
+- name: Configuring cinder config file
+  copy:
+    src: cinder.conf
+    dest: /etc/cinder/cinder.conf
+    owner: root
+    group: cinder
+    mode: 0640
+  when: ansible_distribution == "CentOS"
+
+- name: Configuring nova config file
+  copy:
+    src: nova.conf
+    dest: /etc/nova/nova.conf
+    owner: root
+    group: nova
+    mode: 640
+
+  notify: Restarting nova
+  when: ansible_distribution == "CentOS"
+
+- name: Populating the Block Storage database
+  become_user: root
+  command: su -s /bin/sh -c "cinder-manage db sync" cinder
+  failed_when: false
+  no_log: true
+  when: ansible_distribution == "CentOS"
+
+- name: Starting and enabling cinder service
+  service:
+    name:
+      - openstack-cinder-api.service 
+      - openstack-cinder-scheduler.service
+    state: started
+    enabled: true
+  failed_when: false
+  no_log: true
+  when: ansible_distribution == "CentOS"
+
+- name: Creating cinder database
+  mysql_db:
+    name: cinder
+    state: present
+  become: true
+  become_user: root
+  when: ansible_distribution == "CentOS"
+
+- name: Sourcing the admin credentials
+  command: "source /home/cserver/admin-openrc"
+  args:
+    executable: /bin/bash
+  environment:
+    HOME: "/home/cserver"
+  when: ansible_distribution == "CentOS"
+
+- name: Creating cinder user
+  expect:
+    command: "openstack user create --domain default --password-prompt cinder"
+    responses:
+      "User Password": "cinderpass"
+      "Repeat User Password": "cinderpass"
+  become: true
+  become_user: cserver
+  when: ansible_distribution == "CentOS"
+
+- name: Creating cinderv2 and cinderv3 service entities
+  command: "openstack service create --name cinderv2 --description 'OpenStack Block Storage V2' volumev2"
+  args:
+    executable: /bin/bash
+  become: true
+  become_user: cserver
+  when: ansible_distribution == "CentOS"
+
+- name: Creating a block storage service API endpoints
+  command: |
+    openstack endpoint create --region RegionOne volumev2 public http://controller:8776/v2/%\(tenant_id\)s
+    openstack endpoint create --region RegionOne volumev2 internal http://controller:8776/v2/%\(tenant_id\)s
+    openstack endpoint create --region RegionOne volumev2 admin http://controller:8776/v2/%\(tenant_id\)s
+    openstack endpoint create --region RegionOne volumev3 public http://controller:8776/v3/%\(tenant_id\)s
+    openstack endpoint create --region RegionOne volumev3 internal http://controller:8776/v3/%\(tenant_id\)s
+    openstack endpoint create --region RegionOne volumev3 admin http://controller:8776/v3/%\(tenant_id\)s
+  args:
+    executable: /bin/bash
+  become: true
+  become_user: cserver
+  when: ansible_distribution == "CentOS"
+
